@@ -223,27 +223,25 @@ impl Request {
         stream:   &mut (impl AsyncRead + Unpin),
     ) -> Result<Option<()>, crate::Response> {
         use crate::Response;
-        use crate::util::timeout_in;
-        use std::time::Duration;
 
         let mut buf_idx = 0usize;
-        const READ_TIMEOUT: Duration = Duration::from_millis(5);
         loop {
-            match timeout_in(READ_TIMEOUT, async { stream.read(&mut (*self.__buf__)[buf_idx..]).await }).await {
-                Some(Ok(0)) | None => { if buf_idx == 0 { return Ok(None)}; break },
-                Some(Err(e)) => return match e.kind() {
+            match stream.read(&mut (*self.__buf__)[buf_idx..]).await {
+                Ok(0) => break,
+                Err(e) => return match e.kind() {
                 std::io::ErrorKind::ConnectionReset => Ok(None),
                 _ => Err((|err| {
                     crate::WARNING!("Failed to read stream: {err}");
                     Response::InternalServerError()
                 })(e))
             },
-                Some(Ok(n)) => {
+                Ok(n) => {
                     buf_idx += n;
-                    if self.__buf__[buf_idx-1] == 0 { break }
+                    if self.__buf__[buf_idx.saturating_sub(n + 4)..buf_idx].windows(4).any(|w| w == b"\r\n\r\n") { break }
                 }
-            }
+            };
         }
+        if buf_idx == 0 { return Ok(None)};
         
         let mut r = Reader::new(unsafe {
             // pass detouched bytes
